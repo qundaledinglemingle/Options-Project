@@ -1,0 +1,211 @@
+# options_report.py
+import math
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import yfinance as yf
+from datetime import datetime, timezone
+
+# funcs
+def norm_pdf(x):
+    return (1 / math.sqrt(2 * math.pi)) * math.exp(-0.5 * x * x)
+
+def norm_cdf(x):
+    return 0.5 * (1 + math.erf(x / math.sqrt(2)))
+
+def d1(S0, K, r, sigma, T):
+    return (math.log(S0 / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+
+def d2(S0, K, r, sigma, T):
+    return d1(S0, K, r, sigma, T) - sigma * math.sqrt(T)
+
+def bs_call(S0, K, r, sigma, T):
+    D1, D2 = d1(S0, K, r, sigma, T), d2(S0, K, r, sigma, T)
+    return S0 * norm_cdf(D1) - K * math.exp(-r * T) * norm_cdf(D2)
+
+def bs_put(S0, K, r, sigma, T):
+    D1, D2 = d1(S0, K, r, sigma, T), d2(S0, K, r, sigma, T)
+    return K * math.exp(-r * T) * norm_cdf(-D2) - S0 * norm_cdf(-D1)
+
+def delta_call(S0, K, r, sigma, T):
+    return norm_cdf(d1(S0, K, r, sigma, T))
+
+def delta_put(S0, K, r, sigma, T):
+    return norm_cdf(d1(S0, K, r, sigma, T)) - 1.0
+
+def gamma(S0, K, r, sigma, T):
+    return norm_pdf(d1(S0, K, r, sigma, T)) / (S0 * sigma * math.sqrt(T))
+
+def vega_perc(S0, K, r, sigma, T):
+    # per +1% change in vol
+    return S0 * norm_pdf(d1(S0, K, r, sigma, T)) * math.sqrt(T) * 0.01
+
+def theta_call_per_year(S0, K, r, sigma, T):
+    D1, D2 = d1(S0, K, r, sigma, T), d2(S0, K, r, sigma, T)
+    return -(S0 * norm_pdf(D1) * sigma) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * norm_cdf(D2)
+
+def rho_call(S0, K, r, sigma, T):
+    return K * T * math.exp(-r * T) * norm_cdf(d2(S0, K, r, sigma, T))
+
+def rho_put(S0, K, r, sigma, T):
+    return -K * T * math.exp(-r * T) * norm_cdf(-d2(S0, K, r, sigma, T))
+
+# Payoff helpers
+def payoff_long_call(ST, K, premium):
+    return np.maximum(ST - K, 0.0) - premium
+
+def payoff_long_put(ST, K, premium):
+    return np.maximum(K - ST, 0.0) - premium
+
+def payoff_straddle(ST, K, call_prem, put_prem):
+    return np.maximum(ST - K, 0.0) - call_prem + np.maximum(K - ST, 0.0) - put_prem
+
+def payoff_covered_call(ST, S0, K, call_prem):
+    return (ST - S0) - np.maximum(ST - K, 0.0) + call_prem
+
+def plot_payoff(ST, y, title, fname, vlines=None):
+    plt.figure()
+    plt.plot(ST, y)
+    plt.axhline(0, linestyle="--")
+    if vlines:
+        for x in vlines:
+            plt.axvline(x, linestyle=":", linewidth=1)
+    plt.title(title)
+    plt.xlabel("Stock Price at Expiration (S_T)")
+    plt.ylabel("Profit / Loss")
+    plt.grid(True)
+    plt.savefig(fname, dpi=160, bbox_inches="tight")
+    plt.close()
+
+ticker = input("Enter ticker (e.g., AAPL): ").strip().upper()
+r = float(input("Enter annual risk-free rate (e.g., 0.045 for 4.5%): "))
+tk = yf.Ticker(ticker)
+
+# Current spot
+hist_today = tk.history(period="1d")["Close"]
+if hist_today.empty:
+    raise ValueError("No price data for ticker.")
+S0 = float(hist_today.iloc[-1])
+
+# Expirations & pick one
+expiries = tk.options
+if not expiries:
+    raise ValueError("No option expirations available.")
+print("\nAvailable expirations (first 10 shown):", expiries[:10])
+expiry = input("Pick an expiration from above (YYYY-MM-DD): ").strip()
+
+# Time to expiry (years)
+now = datetime.now(timezone.utc)
+expiry_dt = datetime.fromisoformat(expiry).replace(tzinfo=timezone.utc)
+days = max((expiry_dt - now).total_seconds() / (60*60*24), 0.0)
+T = max(days / 365.0, 1/365.0)
+
+# Option chain + user strike
+chain = tk.option_chain(expiry)
+calls, puts = chain.calls.copy(), chain.puts.copy()
+if calls.empty or puts.empty:
+    raise ValueError("Empty option chain for that expiry.")
+atm_idx = (calls["strike"] - S0).abs().argmin()
+nearby_strikes = calls["strike"].iloc[max(0, atm_idx-3): atm_idx+4].tolist()
+print(f"\nNearby strikes around S0={S0:.2f}:", nearby_strikes)
+K = float(input("Enter your chosen strike price from above: "))
+
+# Realized volatility proxy (1y)
+hist = tk.history(period="1y")["Close"].dropna()
+logret = np.log(hist / hist.shift(1)).dropna()
+sigma = float(logret.std() * np.sqrt(252)) if not logret.empty else 0.25
+
+call_prem = bs_call(S0, K, r, sigma, T)
+put_prem  = bs_put (S0, K, r, sigma, T)
+
+# Payoff grid
+NPTS = 201
+ST = np.linspace(0, 2*S0, NPTS)
+long_call  = payoff_long_call(ST, K, call_prem)
+long_put   = payoff_long_put (ST, K, put_prem)
+straddle   = payoff_straddle (ST, K, call_prem, put_prem)
+cov_call   = payoff_covered_call(ST, S0, K, call_prem)
+
+exp_move_iv_abs = S0 * sigma * math.sqrt(T)
+exp_move_iv_pct = exp_move_iv_abs / S0 * 100
+
+# Intrinsic/time & breakevens
+call_intr = max(S0 - K, 0.0)
+put_intr  = max(K - S0, 0.0)
+call_time = call_prem - call_intr
+put_time  = put_prem  - put_intr
+call_be   = K + call_prem
+put_be    = K - put_prem
+
+# Put–Call Parity check
+parity_lhs = call_prem + K * math.exp(-r * T)
+parity_rhs = S0 + put_prem
+parity_diff = parity_lhs - parity_rhs
+
+# Vega curve (vol impact)
+vols = np.linspace(0.05, 0.60, 40)
+call_vals = [bs_call(S0, K, r, v, T) for v in vols]
+
+summary_df = pd.DataFrame({
+    "Metric": [
+        "S0 (Spot)", "K (Strike)", "r (annual)", "T (years)",
+        "Call Price", "Put Price",
+        "Delta (Call)", "Delta (Put)", "Gamma", "Vega% (per 1%)",
+        "Theta (Call/yr)", "Rho (Call)", "Rho (Put)",
+        "Expected Move IV ($)", "Expected Move IV (%)",
+        "Put–Call Parity (lhs - rhs)",
+        "Call Intrinsic", "Call Time Value", "Put Intrinsic", "Put Time Value",
+        "Call Breakeven", "Put Breakeven"
+    ],
+    "Value": [
+        S0, K, r, T,
+        call_prem, put_prem,
+        delta_call(S0,K,r,sigma,T), delta_put(S0,K,r,sigma,T),
+        gamma(S0,K,r,sigma,T), vega_perc(S0,K,r,sigma,T),
+        theta_call_per_year(S0,K,r,sigma,T),
+        rho_call(S0,K,r,sigma,T), rho_put(S0,K,r,sigma,T),
+        exp_move_iv_abs, exp_move_iv_pct,
+        parity_diff,
+        call_intr, call_time, put_intr, put_time,
+        call_be, put_be
+    ]
+})
+
+payoff_df = pd.DataFrame({
+    "S_T": ST,
+    "Long Call": long_call,
+    "Long Put": long_put,
+    "Straddle": straddle,
+    "Covered Call": cov_call
+})
+
+vega_df = pd.DataFrame({
+    "Volatility": vols,
+    "Call Price": call_vals
+})
+
+plot_payoff(ST, long_call, "Long Call Payoff",      "payoff_long_call.png", vlines=[call_be])
+plot_payoff(ST, long_put,  "Long Put Payoff",       "payoff_long_put.png",  vlines=[put_be])
+plot_payoff(ST, straddle,  "Long Straddle Payoff",  "payoff_straddle.png",  vlines=[K - (call_prem + put_prem), K + (call_prem + put_prem)])
+plot_payoff(ST, cov_call,  "Covered Call Payoff",   "payoff_covered_call.png")
+
+from datetime import datetime as dt
+timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
+out_xlsx = f"{ticker}_Options_Analysis_Report_{timestamp}.xlsx"
+
+dfs = {
+    "Option Summary": summary_df,
+    "Payoff Table": payoff_df,
+    "Volatility Impact": vega_df
+}
+
+with pd.ExcelWriter(out_xlsx, engine="openpyxl") as w:
+    wrote_any = False
+    for sheet_name, df in dfs.items():
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            df.to_excel(w, sheet_name=sheet_name, index=False)
+            wrote_any = True
+    if not wrote_any:
+        pd.DataFrame({"info": ["no data"]}).to_excel(w, sheet_name="Empty", index=False)
+
+print(f"✅ Saved {out_xlsx}")
