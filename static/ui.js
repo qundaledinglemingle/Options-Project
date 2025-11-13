@@ -30,6 +30,8 @@ const {
   Switch,
   Slider,
   Tooltip,
+  Collapse,
+  IconButton,
 } = MaterialUI;
 
 const buildTheme = (mode) =>
@@ -306,7 +308,7 @@ const HistoryChart = ({ history, mode }) => {
     },
     [history, mode]
   );
-  return <canvas ref={canvasRef} style={{ width: "100%", height: 220 }} />;
+  return <canvas ref={canvasRef} style={{ width: "100%", height: 160 }} />;
 };
 
 const SensitivityCard = ({ result, spotShift, setSpotShift, volShift, setVolShift }) => {
@@ -652,6 +654,126 @@ const NarrativeCard = ({ text }) => {
   );
 };
 
+const NewsPanel = ({ articles, warning }) => {
+  if (warning) {
+    return <Alert severity="info" sx={{ mt: 2 }}>{warning}</Alert>;
+  }
+  if (!articles || !articles.length) return null;
+  return (
+    <Stack spacing={2} sx={{ mt: 2 }}>
+      {articles.map((article) => (
+        <Box
+          key={`${article.title}-${article.publishedAt}`}
+          sx={{
+            border: "1px solid rgba(148,163,184,0.15)",
+            borderRadius: 2,
+            p: 2,
+            background: "rgba(30,41,59,0.2)",
+          }}
+        >
+          <Stack direction="row" justifyContent="space-between" alignItems="baseline">
+            <Typography variant="subtitle1">{article.title}</Typography>
+            {article.source && (
+              <Typography variant="caption" color="text.secondary">
+                {article.source}
+              </Typography>
+            )}
+          </Stack>
+          {article.description && (
+            <Typography variant="body2" color="text.secondary" sx={{ my: 1 }}>
+              {article.description}
+            </Typography>
+          )}
+          <Stack direction="row" justifyContent="space-between" alignItems="center">
+            {article.publishedAt && (
+              <Typography variant="caption" color="text.secondary">
+                {new Date(article.publishedAt).toLocaleString()}
+              </Typography>
+            )}
+            {article.url && (
+              <Button size="small" href={article.url} target="_blank" rel="noopener" variant="text">
+                Read article
+              </Button>
+            )}
+          </Stack>
+        </Box>
+      ))}
+    </Stack>
+  );
+};
+
+const EarningsPanel = ({ data, report, loading, warning, conflict }) => {
+  if (loading) {
+    return <LinearProgress sx={{ mt: 1 }} />;
+  }
+  if (warning) {
+    return (
+      <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+        {warning}
+      </Typography>
+    );
+  }
+  return (
+    <Stack spacing={1} sx={{ mt: 1 }}>
+      {data ? (
+        <>
+          <Stack direction="row" spacing={1} alignItems="center">
+            <Typography variant="body1" fontWeight={600}>
+              {data.date}
+            </Typography>
+            {conflict && <Chip size="small" color="warning" label="Matches expiry" />}
+          </Stack>
+          <Typography variant="body2" color="text.secondary">
+            EPS est: {formatNumber(data.epsEstimate, 2)}{" "}
+            {data.epsActual ? `• EPS actual: ${formatNumber(data.epsActual, 2)}` : ""}
+          </Typography>
+          {data.revenueEstimate && (
+            <Typography variant="body2" color="text.secondary">
+              Revenue est: {formatNumber(data.revenueEstimate, 2)}B
+            </Typography>
+          )}
+          {data.quarter && data.year && (
+            <Typography variant="caption" color="text.secondary">
+              {data.quarter}Q{String(data.year).slice(-2)}
+            </Typography>
+          )}
+        </>
+      ) : (
+        <Typography variant="body2" color="text.secondary">
+          No upcoming earnings found.
+        </Typography>
+      )}
+      {!!(report && report.length) && (
+        <Box sx={{ mt: 1 }}>
+          <Typography variant="body2" fontWeight={600} gutterBottom>
+            Recent quarters
+          </Typography>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Quarter</TableCell>
+                <TableCell align="right">EPS (Actual)</TableCell>
+                <TableCell align="right">EPS (Est)</TableCell>
+                <TableCell align="right">Surprise %</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {report.map((row) => (
+                <TableRow key={`${row.year}-${row.quarter}`}>
+                  <TableCell>{row.quarter}Q{String(row.year).slice(-2)}</TableCell>
+                  <TableCell align="right">{formatNumber(row.epsActual, 2)}</TableCell>
+                  <TableCell align="right">{formatNumber(row.epsEstimate, 2)}</TableCell>
+                  <TableCell align="right">{formatNumber(row.surprisePercent, 2)}%</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Box>
+      )}
+    </Stack>
+  );
+};
+
 const OptionsDashboard = () => {
   const [themeMode, setThemeMode] = React.useState("dark");
   const theme = React.useMemo(() => buildTheme(themeMode), [themeMode]);
@@ -668,8 +790,15 @@ const OptionsDashboard = () => {
   const [running, setRunning] = React.useState(false);
   const [result, setResult] = React.useState(null);
   const [comparisons, setComparisons] = React.useState([]);
+  const [news, setNews] = React.useState({ articles: [], warning: "", loading: false });
+  const [earnings, setEarnings] = React.useState({ data: null, report: [], warning: "", loading: false });
   const [spotShift, setSpotShift] = React.useState(0);
   const [volShift, setVolShift] = React.useState(0);
+  const [sectionsExpanded, setSectionsExpanded] = React.useState({
+    strategies: true,
+    charts: true,
+    news: true,
+  });
 
   const selectExpiryByPreference = React.useCallback(
     (preference) => {
@@ -754,6 +883,8 @@ const OptionsDashboard = () => {
       setStrike("");
       setSuggestions([]);
       setResult(null);
+      loadNews(symbol);
+      loadEarnings(symbol);
       setStatusMessage(
         `Loaded ${data.ticker}. Choose an expiration and strike to proceed.`,
         "success"
@@ -762,6 +893,31 @@ const OptionsDashboard = () => {
       setStatusMessage(error.message, "error");
     } finally {
       setLoadingTicker(false);
+    }
+  };
+
+  const loadNews = async (symbol) => {
+    setNews((prev) => ({ ...prev, loading: true }));
+    try {
+      const data = await fetchJSON(`/api/news/${symbol}`);
+      setNews({ articles: data.articles || [], warning: data.warning, loading: false });
+    } catch (error) {
+      setNews({ articles: [], warning: error.message, loading: false });
+    }
+  };
+
+  const loadEarnings = async (symbol) => {
+    setEarnings({ data: null, warning: "", loading: true });
+    try {
+      const data = await fetchJSON(`/api/earnings/${symbol}`);
+      setEarnings({
+        data: data.next || null,
+        report: data.recent || [],
+        warning: data.warning || "",
+        loading: false,
+      });
+    } catch (error) {
+      setEarnings({ data: null, warning: error.message, loading: false });
     }
   };
 
@@ -834,6 +990,10 @@ const OptionsDashboard = () => {
     setVolShift(0);
   }, [result]);
 
+  const toggleSection = (section) => {
+    setSectionsExpanded((prev) => ({ ...prev, [section]: !prev[section] }));
+  };
+
   const metricData = React.useMemo(() => {
     if (!result) return [];
     return [
@@ -904,22 +1064,29 @@ const OptionsDashboard = () => {
                   onChange={(e) => setRiskFreeRate(e.target.value)}
                   inputProps={{ step: 0.0001 }}
                 />
-                <TextField
-                  label="Expiration"
-                  select
-                  value={expiry}
-                  onChange={handleExpiryChange}
-                  SelectProps={{ native: true }}
-                  InputLabelProps={{ shrink: true }}
-                  disabled={!expirations.length}
-                >
-                  <option value="">Select an expiration</option>
-                  {expirations.map((date) => (
-                    <option key={date} value={date}>
-                      {date}
-                    </option>
-                  ))}
-                </TextField>
+                <Box>
+                  <TextField
+                    label="Expiration"
+                    select
+                    value={expiry}
+                    onChange={handleExpiryChange}
+                    SelectProps={{ native: true }}
+                    InputLabelProps={{ shrink: true }}
+                    disabled={!expirations.length}
+                  >
+                    <option value="">Select an expiration</option>
+                    {expirations.map((date) => (
+                      <option key={date} value={date}>
+                        {date}
+                      </option>
+                    ))}
+                  </TextField>
+                  {earnings.data?.date && expiry && earnings.data.date === expiry && (
+                    <Alert severity="warning" sx={{ mt: 1 }}>
+                      This expiration lands on the next earnings date.
+                    </Alert>
+                  )}
+                </Box>
                 <TextField
                   label="Strike"
                   type="number"
@@ -962,6 +1129,17 @@ const OptionsDashboard = () => {
                 >
                   {running ? "Crunching…" : "Run Analysis"}
                 </Button>
+                <Divider light />
+                <Box>
+                  <Typography variant="subtitle2">Next earnings</Typography>
+                  <EarningsPanel
+                    data={earnings.data}
+                    report={earnings.report}
+                    loading={earnings.loading}
+                    warning={earnings.warning}
+                    conflict={earnings.data?.date && earnings.data.date === expiry}
+                  />
+                </Box>
                 <StatusAlert status={status} />
               </Stack>
             </Paper>
@@ -989,6 +1167,12 @@ const OptionsDashboard = () => {
                       </Grid>
                     ))}
                   </Grid>
+                  {result.earnings?.conflicts_with_expiry && (
+                    <Alert severity="warning" sx={{ mt: 2 }}>
+                      Your chosen expiration {result.expiry} lines up with the next earnings date (
+                      {result.earnings?.next?.date}). Expect elevated volatility.
+                    </Alert>
+                  )}
                 </Paper>
 
                 <SensitivityCard
@@ -1000,57 +1184,76 @@ const OptionsDashboard = () => {
                 />
 
                 <Paper sx={{ p: 3 }}>
-                  <Stack spacing={1}>
-                    <Typography variant="h6">Strategy Playbooks</Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      Each payoff card isolates a single strategy so you can compare convexity and breakevens independently.
-                    </Typography>
+                  <Stack direction="row" justifyContent="space-between" alignItems="center">
+                    <Box>
+                      <Typography variant="h6">Strategy Playbooks</Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Each payoff card isolates a single strategy so you can compare convexity and breakevens independently.
+                      </Typography>
+                    </Box>
+                    <Button size="small" onClick={() => toggleSection("strategies")}>
+                      {sectionsExpanded.strategies ? "Hide" : "Show"}
+                    </Button>
                   </Stack>
-                  <Grid container spacing={2} sx={{ mt: 1 }}>
-                    {STRATEGIES.map((cfg, idx) => (
-                      <Grid item xs={12} sm={6} key={cfg.key}>
-                        <StrategyCard cfg={cfg} rows={result.payoff} index={idx} />
-                      </Grid>
-                    ))}
-                  </Grid>
+                  <Collapse in={sectionsExpanded.strategies} timeout="auto" unmountOnExit>
+                    <Grid container spacing={2} sx={{ mt: 1 }}>
+                      {STRATEGIES.map((cfg, idx) => (
+                        <Grid item xs={12} sm={6} key={cfg.key}>
+                          <StrategyCard cfg={cfg} rows={result.payoff} index={idx} />
+                        </Grid>
+                      ))}
+                    </Grid>
+                  </Collapse>
                 </Paper>
 
                 <NarrativeCard text={result.summary_text} />
 
-                <Grid container spacing={3}>
-                  <Grid item xs={12} md={6}>
-                    <Paper sx={{ p: 3, height: "100%" }}>
-                      <Typography variant="h6" gutterBottom>
-                        Volatility Impact
-                      </Typography>
-                      <Box sx={{ height: 320 }}>
-                        <VegaChart rows={result.vega_curve} />
-                      </Box>
-                    </Paper>
-                  </Grid>
-                  <Grid item xs={12} md={6}>
-                    <Paper sx={{ p: 3, height: "100%" }}>
-                      <Typography variant="h6" gutterBottom>
-                        Recent Price Action
-                      </Typography>
-                      <HistoryChart history={result.history} mode={themeMode} />
-                    </Paper>
-                  </Grid>
-                  <Grid item xs={12} md={6}>
-                    <Paper sx={{ p: 3, height: "100%" }}>
-                      <Typography variant="h6" gutterBottom>
-                        Downloads
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                        Export the Excel workbook and high-resolution payoff charts generated by the backend.
-                      </Typography>
-                      <Downloads files={result.files} />
-                    </Paper>
-                  </Grid>
-                  <Grid item xs={12} md={6}>
-                    <ExportCenter result={result} />
-                  </Grid>
-                </Grid>
+                <Paper sx={{ p: 3 }}>
+                  <Stack direction="row" justifyContent="space-between" alignItems="center">
+                    <Typography variant="h6">Charts & Downloads</Typography>
+                    <Button size="small" onClick={() => toggleSection("charts")}>
+                      {sectionsExpanded.charts ? "Hide" : "Show"}
+                    </Button>
+                  </Stack>
+                  <Collapse in={sectionsExpanded.charts} timeout="auto" unmountOnExit>
+                    <Grid container spacing={3} sx={{ mt: 1 }}>
+                      <Grid item xs={12} md={6}>
+                        <Paper sx={{ p: 3, height: "100%" }}>
+                          <Typography variant="subtitle1" gutterBottom>
+                            Volatility Impact
+                          </Typography>
+                          <Box sx={{ height: 300 }}>
+                            <VegaChart rows={result.vega_curve} />
+                          </Box>
+                        </Paper>
+                      </Grid>
+                      <Grid item xs={12} md={6}>
+                        <Paper sx={{ p: 3, height: "100%" }}>
+                          <Typography variant="subtitle1" gutterBottom>
+                            Recent Price Action
+                          </Typography>
+                          <Box sx={{ height: 220 }}>
+                            <HistoryChart history={result.history} mode={themeMode} />
+                          </Box>
+                        </Paper>
+                      </Grid>
+                      <Grid item xs={12} md={6}>
+                        <Paper sx={{ p: 3, height: "100%" }}>
+                          <Typography variant="subtitle1" gutterBottom>
+                            Downloads
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                            Export the Excel workbook and high-resolution payoff charts generated by the backend.
+                          </Typography>
+                          <Downloads files={result.files} />
+                        </Paper>
+                      </Grid>
+                      <Grid item xs={12} md={6}>
+                        <ExportCenter result={result} />
+                      </Grid>
+                    </Grid>
+                  </Collapse>
+                </Paper>
 
                 <Paper sx={{ p: 3 }}>
                   <Typography variant="h6" gutterBottom>
@@ -1060,6 +1263,21 @@ const OptionsDashboard = () => {
                 </Paper>
 
                 <ComparisonBoard base={result} comparisons={comparisons} onRemove={removeComparison} />
+                <Paper sx={{ p: 3 }}>
+                  <Stack direction="row" justifyContent="space-between" alignItems="center">
+                    <Typography variant="h6">News</Typography>
+                    <Button size="small" onClick={() => toggleSection("news")}>
+                      {sectionsExpanded.news ? "Hide" : "Show"}
+                    </Button>
+                  </Stack>
+                  <Collapse in={sectionsExpanded.news} timeout="auto" unmountOnExit>
+                    {news.loading ? (
+                      <LinearProgress sx={{ mt: 2 }} />
+                    ) : (
+                      <NewsPanel articles={news.articles} warning={news.warning} />
+                    )}
+                  </Collapse>
+                </Paper>
               </Stack>
             </Fade>
           </Grid>

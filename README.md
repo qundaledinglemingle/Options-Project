@@ -22,6 +22,7 @@ The refreshed UI (served from `app.py`) now uses React + Material UI (loaded via
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+# Optional: export FINNHUB_API_KEY=your_finnhub_key
 export FLASK_APP=app.py            # Windows (PowerShell): $env:FLASK_APP="app.py"
 flask run
 ```
@@ -33,3 +34,4 @@ Open http://127.0.0.1:5000/ and use the dashboard. The backend still supports th
 - The browser makes three API calls: `/api/ticker/<ticker>`, `/api/strikes?ticker=...`, and `/api/analyze`. Feel free to script against those endpoints if you need automation.
 - Network access is still required at runtime because the calculations rely on live Yahoo Finance data via `yfinance`.
 - The Material UI React build is delivered client-side via CDN + Babel, so no bundler is required. If you later migrate to a dedicated React toolchain, you can drop in a compiled bundle and keep the Flask API as-is.
+- For market and earnings context, set `FINNHUB_API_KEY` in your environment. When present, the UI will show recent headlines plus the next earnings date (with an automatic warning if your chosen expiration matches that event).
